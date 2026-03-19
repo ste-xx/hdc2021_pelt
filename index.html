@@ -357,66 +357,107 @@ async function loadImageFile(file) {
   }
 }
 
-/** Load a 16-bit grayscale TIFF using a minimal pure-JS reader. */
+/** Load a 16-bit grayscale TIFF using a minimal pure-JS reader.
+ *  Supports uncompressed (no compression) single- and multi-strip TIFFs,
+ *  both little-endian (II) and big-endian (MM) byte order.
+ */
 async function loadTiff(file) {
   const buf = await file.arrayBuffer();
   const view = new DataView(buf);
 
-  // Byte order
+  // Byte order marker
   const order = view.getUint16(0, true);
-  const le = (order === 0x4949);  // little-endian if II
+  const le = (order === 0x4949);  // little-endian if "II", big-endian if "MM"
 
   const magic = view.getUint16(2, le);
   if (magic !== 42) throw new Error('Not a valid TIFF file');
 
   let ifdOffset = view.getUint32(4, le);
 
-  // Read IFD
+  // Read IFD entries
   const numEntries = view.getUint16(ifdOffset, le);
   ifdOffset += 2;
 
   const tags = {};
   for (let i = 0; i < numEntries; i++) {
-    const tag   = view.getUint16(ifdOffset, le);
-    const type  = view.getUint16(ifdOffset + 2, le);
-    const count = view.getUint32(ifdOffset + 4, le);
-    const valOrOffset = view.getUint32(ifdOffset + 8, le);
-
-    // Decode inline SHORT (type=3) or LONG (type=4) value
-    let val;
-    if (type === 3 && count === 1) {
-      val = view.getUint16(ifdOffset + 8, le);
-    } else if (type === 4 && count === 1) {
-      val = valOrOffset;
-    } else {
-      val = valOrOffset; // treat as offset for multi-value tags
-    }
-    tags[tag] = { type, count, val, valOrOffset };
+    const tag   = view.getUint16(ifdOffset,      le);
+    const type  = view.getUint16(ifdOffset +  2, le);
+    const count = view.getUint32(ifdOffset +  4, le);
+    tags[tag] = { type, count, rawOffset: ifdOffset + 8 };
     ifdOffset += 12;
   }
 
-  const width      = tags[256] ? tags[256].val : 0;
-  const height     = tags[257] ? tags[257].val : 0;
-  const bitsPerSample = tags[258] ? tags[258].val : 8;
-  const compression   = tags[259] ? tags[259].val : 1;
-  const stripOffsets  = tags[273] ? tags[273].val : 0;
-  const rowsPerStrip  = tags[278] ? tags[278].val : height;
-  const stripByteCounts = tags[279] ? tags[279].val : 0;
+  // Read a single scalar value from a tag (SHORT or LONG).
+  function readTagScalar(tagId) {
+    const t = tags[tagId];
+    if (!t) return null;
+    if (t.type === 3) return view.getUint16(t.rawOffset, le); // SHORT
+    if (t.type === 4) return view.getUint32(t.rawOffset, le); // LONG
+    return null;
+  }
 
-  if (compression !== 1) throw new Error('Compressed TIFFs are not supported; please convert to uncompressed first.');
+  // Read an array of values for a tag that may be inline (count=1) or external.
+  function readTagArray(tagId) {
+    const t = tags[tagId];
+    if (!t) return [];
+    const bytesPerVal = (t.type === 3) ? 2 : 4;
+    const inlineBytes = 4;  // IFD value field is always 4 bytes
+    const values = [];
+    if (t.count * bytesPerVal <= inlineBytes) {
+      // All values fit inline
+      for (let j = 0; j < t.count; j++) {
+        values.push(t.type === 3
+          ? view.getUint16(t.rawOffset + j * 2, le)
+          : view.getUint32(t.rawOffset + j * 4, le));
+      }
+    } else {
+      // Values are at the offset stored in the field
+      const base = view.getUint32(t.rawOffset, le);
+      for (let j = 0; j < t.count; j++) {
+        values.push(t.type === 3
+          ? view.getUint16(base + j * 2, le)
+          : view.getUint32(base + j * 4, le));
+      }
+    }
+    return values;
+  }
+
+  const width         = readTagScalar(256) || 0;
+  const height        = readTagScalar(257) || 0;
+  const bitsPerSample = readTagScalar(258) || 8;
+  const compression   = readTagScalar(259) || 1;
+
+  if (compression !== 1) {
+    throw new Error(
+      'Compressed TIFFs are not supported. Please convert to uncompressed TIFF ' +
+      '(e.g. with ImageJ or GDAL) or save as PNG before uploading.'
+    );
+  }
+
+  const stripOffsets    = readTagArray(273);
+  const stripByteCounts = readTagArray(279);
+
+  if (!stripOffsets.length) throw new Error('TIFF has no strip-offset data.');
 
   const pixels = height * width;
-  const data = new Float32Array(pixels);
+  const data   = new Float32Array(pixels);
+  let dst = 0;
 
-  if (bitsPerSample === 16) {
-    // Read uint16 strip data
-    const stripData = new Uint16Array(buf, stripOffsets, pixels);
-    for (let i = 0; i < pixels; i++) data[i] = stripData[i];
-  } else if (bitsPerSample === 8) {
-    const stripData = new Uint8Array(buf, stripOffsets, pixels);
-    for (let i = 0; i < pixels; i++) data[i] = stripData[i] * 256; // scale to 16-bit range
-  } else {
-    throw new Error(`Unsupported bits-per-sample: ${bitsPerSample}`);
+  for (let s = 0; s < stripOffsets.length; s++) {
+    const offset    = stripOffsets[s];
+    const byteCount = stripByteCounts[s] !== undefined
+      ? stripByteCounts[s]
+      : (bitsPerSample / 8) * (pixels - dst);  // fallback if tag absent
+
+    if (bitsPerSample === 16) {
+      const strip = new Uint16Array(buf, offset, byteCount >>> 1);
+      for (let k = 0; k < strip.length; k++) data[dst++] = strip[k];
+    } else if (bitsPerSample === 8) {
+      const strip = new Uint8Array(buf, offset, byteCount);
+      for (let k = 0; k < strip.length; k++) data[dst++] = strip[k] * 256;
+    } else {
+      throw new Error(`Unsupported bits-per-sample: ${bitsPerSample}`);
+    }
   }
 
   return { data, height, width };
