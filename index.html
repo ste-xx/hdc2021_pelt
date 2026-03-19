@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HDC2021 Image Deblurring</title>
+
+  <!-- TensorFlow.js for in-browser neural-network inference -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f0f2f5;
+      color: #222;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1a1a2e;
+      color: #eee;
+      padding: 1.5rem 2rem;
+    }
+    header h1 { font-size: 1.6rem; margin-bottom: .3rem; }
+    header p  { font-size: .9rem; color: #aab; max-width: 720px; }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+
+    /* ── controls ────────────────────────────────────────────────── */
+    .controls {
+      background: #fff;
+      border-radius: 10px;
+      padding: 1.4rem 1.6rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,.07);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.2rem;
+      align-items: flex-end;
+      margin-bottom: 1.4rem;
+    }
+    .field { display: flex; flex-direction: column; gap: .4rem; }
+    .field label { font-size: .8rem; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .05em; }
+
+    input[type="file"] {
+      border: 2px dashed #bbc;
+      border-radius: 6px;
+      padding: .5rem .8rem;
+      cursor: pointer;
+      background: #fafafa;
+      font-size: .85rem;
+    }
+    input[type="file"]:hover { border-color: #667eea; }
+
+    .category-row { display: flex; align-items: center; gap: .6rem; }
+    input[type="range"] { width: 140px; accent-color: #667eea; }
+    .cat-badge {
+      background: #667eea;
+      color: #fff;
+      border-radius: 20px;
+      padding: .15rem .65rem;
+      font-size: .85rem;
+      font-weight: 700;
+      min-width: 2.4rem;
+      text-align: center;
+    }
+
+    button#processBtn {
+      padding: .6rem 1.6rem;
+      background: #667eea;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s;
+      align-self: flex-end;
+    }
+    button#processBtn:hover:not(:disabled) { background: #4f5dba; }
+    button#processBtn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── status bar ──────────────────────────────────────────────── */
+    #statusBar {
+      background: #fff;
+      border-radius: 8px;
+      padding: .7rem 1.2rem;
+      margin-bottom: 1.2rem;
+      font-size: .88rem;
+      color: #444;
+      border-left: 4px solid #667eea;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06);
+      display: none;
+    }
+    #statusBar.visible { display: block; }
+    #progressBar {
+      height: 4px;
+      background: #e8e8f0;
+      border-radius: 2px;
+      margin-top: .5rem;
+      overflow: hidden;
+    }
+    #progressFill {
+      height: 100%;
+      background: #667eea;
+      border-radius: 2px;
+      transition: width .3s ease;
+      width: 0%;
+    }
+
+    /* ── image panels ────────────────────────────────────────────── */
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.2rem;
+      margin-bottom: 1.6rem;
+    }
+    @media (max-width: 640px) { .panels { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: #fff;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,.07);
+    }
+    .panel-header {
+      padding: .7rem 1.1rem;
+      background: #f5f6fa;
+      border-bottom: 1px solid #e8e9ef;
+      font-size: .82rem;
+      font-weight: 700;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .panel-body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 240px;
+      padding: 1rem;
+      background: #fafafa;
+    }
+    .panel-body canvas { max-width: 100%; image-rendering: pixelated; }
+    .placeholder {
+      color: #aaa;
+      font-size: .9rem;
+      text-align: center;
+    }
+    .placeholder svg { display: block; margin: 0 auto .5rem; }
+
+    /* ── info note ───────────────────────────────────────────────── */
+    .note {
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      border-radius: 8px;
+      padding: .9rem 1.2rem;
+      font-size: .85rem;
+      color: #555;
+      margin-bottom: 1.4rem;
+    }
+    .note strong { color: #333; }
+
+    /* ── examples section ────────────────────────────────────────── */
+    .examples-section { background: #fff; border-radius: 10px; padding: 1.4rem 1.6rem; box-shadow: 0 2px 8px rgba(0,0,0,.07); }
+    .examples-section h2 { font-size: 1.05rem; margin-bottom: .4rem; }
+    .examples-section p { font-size: .85rem; color: #666; margin-bottom: 1rem; }
+    .examples-toggle {
+      background: none;
+      border: 1px solid #ccd;
+      border-radius: 6px;
+      padding: .3rem .8rem;
+      cursor: pointer;
+      font-size: .82rem;
+      color: #555;
+      margin-bottom: 1rem;
+    }
+    .examples-toggle:hover { border-color: #667eea; color: #667eea; }
+    #examplesGrid {
+      display: none;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+    #examplesGrid.open { display: grid; }
+    .example-pair {
+      border: 1px solid #e8e9ef;
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: .78rem;
+    }
+    .example-pair-header {
+      background: #f5f6fa;
+      padding: .35rem .6rem;
+      font-weight: 600;
+      color: #555;
+      border-bottom: 1px solid #e8e9ef;
+    }
+    .example-pair-images { display: flex; }
+    .example-pair-images div { flex: 1; text-align: center; padding: .3rem; background: #fafafa; }
+    .example-pair-images div:first-child { border-right: 1px solid #e8e9ef; }
+    .example-pair-images span { display: block; font-size: .7rem; color: #888; margin-bottom: .2rem; }
+    .example-pair-images img { max-width: 100%; image-rendering: pixelated; }
+  </style>
+</head>
+
+<body>
+<header>
+  <h1>HDC2021 — In-Browser Image Deblurring</h1>
+  <p>
+    Mixed-Scale Dense CNN deblurring for the
+    <a href="http://fips.fi/HDC2021.php" style="color:#99aaff">Helsinki Deblur Challenge 2021</a>.
+    Upload a blurred TIFF (16-bit) or PNG image, select the blur category, and run
+    the neural network entirely in your browser using TensorFlow.js.
+  </p>
+</header>
+
+<main>
+
+  <div class="note">
+    <strong>How to use:</strong>
+    Upload a blurred image from the HDC2021 dataset (16-bit TIFF or PNG), choose the matching
+    blur category, then click <em>Deblur Image</em>.  All computation runs locally — nothing
+    is sent to a server.  For best results use the original 16-bit TIFF files; 8-bit PNGs
+    are automatically scaled to the expected 16-bit range.  Images larger than 600 px on
+    the longest side are resized before processing to limit memory use.
+    <br><br>
+    <strong>Requirements:</strong> The model files must be present under <code>models/</code>.
+    Run <code>python convert_models.py</code> once if they are missing, then serve the
+    directory with a local HTTP server (e.g. <code>python -m http.server 8000</code>) and
+    open <code>http://localhost:8000</code>.
+  </div>
+
+  <!-- ── controls ─────────────────────────────────────────────── -->
+  <div class="controls">
+    <div class="field">
+      <label>Blurred image (TIFF 16-bit or PNG)</label>
+      <input type="file" id="imageInput" accept=".tif,.tiff,.png,.jpg,.jpeg" />
+    </div>
+    <div class="field">
+      <label>Blur category</label>
+      <div class="category-row">
+        <input type="range" id="catSlider" min="0" max="19" value="0" />
+        <span class="cat-badge" id="catBadge">0</span>
+      </div>
+    </div>
+    <button id="processBtn" disabled>Deblur Image</button>
+  </div>
+
+  <!-- ── status bar ───────────────────────────────────────────── -->
+  <div id="statusBar">
+    <span id="statusText">Ready</span>
+    <div id="progressBar"><div id="progressFill"></div></div>
+  </div>
+
+  <!-- ── image panels ─────────────────────────────────────────── -->
+  <div class="panels">
+    <div class="panel">
+      <div class="panel-header">Input (blurred)</div>
+      <div class="panel-body" id="inputBody">
+        <div class="placeholder">
+          <svg width="48" height="48" fill="none" stroke="#ccc" stroke-width="1.5" viewBox="0 0 24 24">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+          Upload an image to get started
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">Output (deblurred)</div>
+      <div class="panel-body" id="outputBody">
+        <div class="placeholder">
+          <svg width="48" height="48" fill="none" stroke="#ccc" stroke-width="1.5" viewBox="0 0 24 24">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+          </svg>
+          Deblurred output will appear here
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── example outputs ──────────────────────────────────────── -->
+  <div class="examples-section">
+    <h2>Example Outputs</h2>
+    <p>Pre-computed results from the Python pipeline for all 20 blur categories.</p>
+    <button class="examples-toggle" id="toggleExamples">▶ Show examples</button>
+    <div id="examplesGrid"></div>
+  </div>
+
+</main>
+
+<script>
+'use strict';
+
+/* ═══════════════════════════════════════════════════════════════
+   Utility helpers
+═══════════════════════════════════════════════════════════════ */
+
+/** Decode a base64 string into a Float32Array. */
+function b64toF32(b64) {
+  const raw = atob(b64);
+  const buf = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  return new Float32Array(buf.buffer);
+}
+
+/** Set the status bar text and progress (0–100). */
+function setStatus(text, pct) {
+  const bar = document.getElementById('statusBar');
+  bar.classList.add('visible');
+  document.getElementById('statusText').textContent = text;
+  if (pct !== undefined) document.getElementById('progressFill').style.width = pct + '%';
+}
+function hideStatus() {
+  document.getElementById('statusBar').classList.remove('visible');
+}
+
+/** Display a grayscale Float32Array [0,1] on a canvas element. */
+function showGray(canvas, data, h, w) {
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < h * w; i++) {
+    const v = Math.max(0, Math.min(1, data[i])) * 255 | 0;
+    img.data[i * 4]     = v;
+    img.data[i * 4 + 1] = v;
+    img.data[i * 4 + 2] = v;
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/** Replace panel placeholder with a canvas. */
+function setCanvas(panelBodyId, canvas) {
+  const body = document.getElementById(panelBodyId);
+  body.innerHTML = '';
+  body.appendChild(canvas);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Image loading
+═══════════════════════════════════════════════════════════════ */
+
+/**
+ * Load an image file and return { data: Float32Array, height, width }.
+ * For TIFF files a minimal 16-bit reader is included.
+ * For PNG/JPG the Canvas API is used (8-bit, values scaled to 16-bit range).
+ */
+async function loadImageFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (ext === 'tif' || ext === 'tiff') {
+    return loadTiff(file);
+  } else {
+    return loadPNG(file);
+  }
+}
+
+/** Load a 16-bit grayscale TIFF using a minimal pure-JS reader. */
+async function loadTiff(file) {
+  const buf = await file.arrayBuffer();
+  const view = new DataView(buf);
+
+  // Byte order
+  const order = view.getUint16(0, true);
+  const le = (order === 0x4949);  // little-endian if II
+
+  const magic = view.getUint16(2, le);
+  if (magic !== 42) throw new Error('Not a valid TIFF file');
+
+  let ifdOffset = view.getUint32(4, le);
+
+  // Read IFD
+  const numEntries = view.getUint16(ifdOffset, le);
+  ifdOffset += 2;
+
+  const tags = {};
+  for (let i = 0; i < numEntries; i++) {
+    const tag   = view.getUint16(ifdOffset, le);
+    const type  = view.getUint16(ifdOffset + 2, le);
+    const count = view.getUint32(ifdOffset + 4, le);
+    const valOrOffset = view.getUint32(ifdOffset + 8, le);
+
+    // Decode inline SHORT (type=3) or LONG (type=4) value
+    let val;
+    if (type === 3 && count === 1) {
+      val = view.getUint16(ifdOffset + 8, le);
+    } else if (type === 4 && count === 1) {
+      val = valOrOffset;
+    } else {
+      val = valOrOffset; // treat as offset for multi-value tags
+    }
+    tags[tag] = { type, count, val, valOrOffset };
+    ifdOffset += 12;
+  }
+
+  const width      = tags[256] ? tags[256].val : 0;
+  const height     = tags[257] ? tags[257].val : 0;
+  const bitsPerSample = tags[258] ? tags[258].val : 8;
+  const compression   = tags[259] ? tags[259].val : 1;
+  const stripOffsets  = tags[273] ? tags[273].val : 0;
+  const rowsPerStrip  = tags[278] ? tags[278].val : height;
+  const stripByteCounts = tags[279] ? tags[279].val : 0;
+
+  if (compression !== 1) throw new Error('Compressed TIFFs are not supported; please convert to uncompressed first.');
+
+  const pixels = height * width;
+  const data = new Float32Array(pixels);
+
+  if (bitsPerSample === 16) {
+    // Read uint16 strip data
+    const stripData = new Uint16Array(buf, stripOffsets, pixels);
+    for (let i = 0; i < pixels; i++) data[i] = stripData[i];
+  } else if (bitsPerSample === 8) {
+    const stripData = new Uint8Array(buf, stripOffsets, pixels);
+    for (let i = 0; i < pixels; i++) data[i] = stripData[i] * 256; // scale to 16-bit range
+  } else {
+    throw new Error(`Unsupported bits-per-sample: ${bitsPerSample}`);
+  }
+
+  return { data, height, width };
+}
+
+/** Load a PNG or JPG using the Canvas API (8-bit, scaled to 16-bit). */
+function loadPNG(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const rgba = ctx.getImageData(0, 0, w, h).data;
+      const data = new Float32Array(h * w);
+      for (let i = 0; i < h * w; i++) {
+        // Average R,G,B channels for grayscale; scale to 16-bit range
+        data[i] = ((rgba[i*4] + rgba[i*4+1] + rgba[i*4+2]) / 3) * 256;
+      }
+      URL.revokeObjectURL(url);
+      resolve({ data, height: h, width: w });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Failed to load image')); };
+    img.src = url;
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Model loading
+═══════════════════════════════════════════════════════════════ */
+
+const MODEL_CACHE = {}; // key: "catN/scaleX" → parsed model
+
+/** Fetch and parse one model JSON file. */
+async function loadModelJSON(category, scale) {
+  const key = `${category}/${scale}`;
+  if (MODEL_CACHE[key]) return MODEL_CACHE[key];
+
+  const url = `models/category${category}/${scale}.json`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Cannot load ${url} (HTTP ${resp.status}). Run python convert_models.py first.`);
+  const json = await resp.json();
+
+  const model = {
+    d:       json.d,
+    nin:     json.nin,
+    nout:    json.nout,
+    dl:      json.dl,
+    gam_in:  json.gam_in,
+    off_in:  json.off_in,
+    gam_out: json.gam_out,
+    off_out: json.off_out,
+    oo:      json.oo,
+    w:       b64toF32(json.w),    // (nout, nin+d)
+    o:       b64toF32(json.o),    // (d,)
+    fData:   b64toF32(json.f),    // all filters concatenated
+    fOffsets: [],
+  };
+
+  // Precompute per-layer filter offsets
+  let offset = 0;
+  for (let i = 0; i < model.d; i++) {
+    model.fOffsets.push(offset);
+    offset += (model.nin + i) * 9;
+  }
+
+  // Mean image (only in scale20.json)
+  if (json.mean20_shape) {
+    model.mean20Shape = json.mean20_shape;  // [rows, cols]
+    model.mean20Data  = b64toF32(json.mean20); // float32 array
+  }
+
+  MODEL_CACHE[key] = model;
+  return model;
+}
+
+/** Load all 5 models for a given category. */
+async function loadCategoryModels(category) {
+  const scales = ['scale20', 'scale10', 'scale4', 'scale2', 'scalef'];
+  const models = {};
+  for (let i = 0; i < scales.length; i++) {
+    setStatus(`Loading model ${i + 1}/5 for category ${category}…`, (i / 5) * 40);
+    models[scales[i]] = await loadModelJSON(category, scales[i]);
+  }
+  return models;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MSD Network forward pass (TensorFlow.js)
+═══════════════════════════════════════════════════════════════ */
+
+/**
+ * Run one MSD network.
+ * inputs: array of tf.Tensor2D, each [H, W], containing raw (pre-normalised) float values.
+ * Returns a tf.Tensor2D [H, W].  Caller must dispose it.
+ *
+ * Memory is managed manually (no tf.tidy) so intermediate growing tensors
+ * are freed at each iteration instead of accumulating until the scope ends.
+ */
+function msdForward(inputs, model) {
+  const { d, nin, dl, gam_in, off_in, gam_out, off_out, oo, w, o, fData, fOffsets } = model;
+  const H = inputs[0].shape[0];
+  const W = inputs[0].shape[1];
+
+  // ── 1. Normalise inputs: x_norm = x * gam_in[i] + off_in[i] ──────────
+  const normList = inputs.map((inp, i) =>
+    inp.mul(gam_in[i]).add(off_in[i]).reshape([1, H, W, 1])
+  );
+
+  // Start with all normalised inputs as the running feature-map tensor
+  let allFM = tf.concat(normList, 3);   // [1, H, W, nin]
+  normList.forEach(t => t.dispose());
+
+  // ── 2. Layer-by-layer dilated convolutions ────────────────────────────
+  for (let i = 0; i < d; i++) {
+    const inCh = nin + i;
+
+    // Transpose filter from (inCh, 3, 3) → [3, 3, inCh, 1] for TF.js
+    const rawFilter  = fData.subarray(fOffsets[i], fOffsets[i] + inCh * 9);
+    const tfFilterData = new Float32Array(inCh * 9);
+    for (let c = 0; c < inCh; c++) {
+      for (let r = 0; r < 3; r++) {
+        for (let s = 0; s < 3; s++) {
+          tfFilterData[(r * 3 + s) * inCh + c] = rawFilter[c * 9 + r * 3 + s];
+        }
+      }
+    }
+
+    const filterTensor = tf.tensor4d(tfFilterData, [3, 3, inCh, 1]);
+    const dilation     = dl[i];
+
+    // Dilated conv2d: output keeps the same spatial size ('same' padding)
+    const convOut  = tf.conv2d(allFM, filterTensor, 1, 'same', 'NHWC', [dilation, dilation]);
+    filterTensor.dispose();
+
+    // Bias + ReLU
+    const layerOut = tf.relu(convOut.add(o[i]));
+    convOut.dispose();
+
+    // Append layer output and dispose old allFM
+    const newAllFM = tf.concat([allFM, layerOut], 3);
+    allFM.dispose();
+    layerOut.dispose();
+    allFM = newAllFM;
+  }
+
+  // ── 3. Final 1×1 convolution (linear combination across all channels) ─
+  const wTensor = tf.tensor4d(Array.from(w), [1, 1, nin + d, 1]);
+  const outConv = tf.conv2d(allFM, wTensor, 1, 'same');
+  allFM.dispose();
+  wTensor.dispose();
+
+  // Output bias + denormalise: out_final = outConv * gam_out + off_out
+  const withBias = outConv.add(oo);
+  outConv.dispose();
+  const denorm = withBias.mul(gam_out[0]).add(off_out[0]);
+  withBias.dispose();
+
+  const result = denorm.reshape([H, W]);
+  denorm.dispose();
+  return result;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Multi-scale processing pipeline
+═══════════════════════════════════════════════════════════════ */
+
+/** Bilinear resize a [H, W] tensor to [newH, newW]. Returns new tensor. */
+function resizeTo(t, newH, newW) {
+  const r = tf.image.resizeBilinear(t.reshape([1, t.shape[0], t.shape[1], 1]), [newH, newW]);
+  const out = r.reshape([newH, newW]);
+  r.dispose();
+  return out;
+}
+
+/** Average-pool a [H, W] tensor by factor k → [floor(H/k), floor(W/k)]. */
+function avgDown(t, k) {
+  const r = tf.avgPool(t.reshape([1, t.shape[0], t.shape[1], 1]), [k, k], [k, k], 'valid');
+  const out = r.reshape([Math.floor(t.shape[0] / k), Math.floor(t.shape[1] / k)]);
+  r.dispose();
+  return out;
+}
+
+/**
+ * Deblur an image using the 5-network multi-scale pipeline.
+ *
+ * imageData: Float32Array of 16-bit pixel values (already resized, row-major).
+ * height, width: image dimensions.
+ * models: { scale20, scale10, scale4, scale2, scalef } from loadCategoryModels().
+ *
+ * Returns a Float32Array [height*width] with values in [0, 1].
+ */
+async function runPipeline(imageData, height, width, models) {
+  // Build the input mean at the correct spatial size from the stored 20x mean.
+  // mean20Shape: [rows, cols] at 20× downscale of original 1460×2360 image.
+  const m = models.scale20;
+  const [mr, mc] = m.mean20Shape;  // e.g. [73, 118]
+  // We upsample the stored mean to the full uploaded image size, then use it
+  // for mean subtraction at each scale (leveraging linearity of avg pooling).
+  const meanSmall = tf.tensor2d(m.mean20Data, [mr, mc]);
+  const meanFull  = resizeTo(meanSmall, height, width);
+  meanSmall.dispose();
+
+  // Subtract mean from original image
+  const imRaw  = tf.tensor2d(imageData, [height, width]);
+  const im     = imRaw.sub(meanFull);
+  imRaw.dispose();
+  meanFull.dispose();
+
+  // Downscaled inputs
+  const im20 = avgDown(im, 20);
+  const im10 = avgDown(im, 10);
+  const im4  = avgDown(im, 4);
+  const im2  = avgDown(im, 2);
+
+  setStatus('Running scale-20 network…', 50);
+  await tf.nextFrame();
+  const out20 = msdForward([im20], models.scale20);
+  im20.dispose();
+
+  setStatus('Running scale-10 network…', 60);
+  await tf.nextFrame();
+  const up20  = resizeTo(out20, im10.shape[0], im10.shape[1]);
+  out20.dispose();
+  const out10 = msdForward([im10, up20], models.scale10);
+  im10.dispose(); up20.dispose();
+
+  setStatus('Running scale-4 network…', 70);
+  await tf.nextFrame();
+  const up10  = resizeTo(out10, im4.shape[0], im4.shape[1]);
+  out10.dispose();
+  const out4  = msdForward([im4, up10], models.scale4);
+  im4.dispose(); up10.dispose();
+
+  setStatus('Running scale-2 network…', 80);
+  await tf.nextFrame();
+  const up4   = resizeTo(out4, im2.shape[0], im2.shape[1]);
+  out4.dispose();
+  const out2  = msdForward([im2, up4], models.scale2);
+  im2.dispose(); up4.dispose();
+
+  setStatus('Running full-scale network…', 88);
+  await tf.nextFrame();
+  const up2   = resizeTo(out2, height, width);
+  out2.dispose();
+  const outF  = msdForward([im, up2], models.scalef);
+  im.dispose(); up2.dispose();
+
+  // Clip to [0, 1]
+  const clipped = tf.clipByValue(outF, 0, 1);
+  outF.dispose();
+
+  const result = await clipped.data();
+  clipped.dispose();
+  return result;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Image size management
+═══════════════════════════════════════════════════════════════ */
+
+const MAX_DIM = 600;  // resize if either dimension exceeds this
+
+/**
+ * Resize imageData to fit within MAX_DIM × MAX_DIM using bilinear interpolation.
+ * Returns { data, height, width } (possibly unchanged).
+ */
+async function maybeResize(imgData, h, w) {
+  if (h <= MAX_DIM && w <= MAX_DIM) return { data: imgData, height: h, width: w };
+
+  const scale  = MAX_DIM / Math.max(h, w);
+  const newH   = Math.round(h * scale);
+  const newW   = Math.round(w * scale);
+
+  const t      = tf.tensor2d(imgData, [h, w]);
+  const resized = resizeTo(t, newH, newW);
+  t.dispose();
+
+  const data   = await resized.data();
+  resized.dispose();
+  return { data: new Float32Array(data), height: newH, width: newW };
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UI logic
+═══════════════════════════════════════════════════════════════ */
+
+let loadedImage = null;  // { data, height, width }
+
+// Category slider
+const catSlider = document.getElementById('catSlider');
+const catBadge  = document.getElementById('catBadge');
+catSlider.addEventListener('input', () => { catBadge.textContent = catSlider.value; });
+
+// File input
+document.getElementById('imageInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  try {
+    setStatus('Loading image…', 10);
+    let img = await loadImageFile(file);
+    img = await maybeResize(img.data, img.height, img.width);
+
+    loadedImage = img;
+
+    // Show input image (normalise to 0-1 for display)
+    const displayData = new Float32Array(img.data.length);
+    let maxVal = 0;
+    for (let v of img.data) if (v > maxVal) maxVal = v;
+    maxVal = maxVal || 1;
+    for (let i = 0; i < img.data.length; i++) displayData[i] = img.data[i] / maxVal;
+
+    const canvas = document.createElement('canvas');
+    showGray(canvas, displayData, img.height, img.width);
+    setCanvas('inputBody', canvas);
+
+    document.getElementById('processBtn').disabled = false;
+    hideStatus();
+  } catch (err) {
+    setStatus('Error loading image: ' + err.message, 0);
+    console.error(err);
+  }
+});
+
+// Process button
+document.getElementById('processBtn').addEventListener('click', async () => {
+  if (!loadedImage) return;
+
+  const btn = document.getElementById('processBtn');
+  btn.disabled = true;
+
+  try {
+    const category = parseInt(catSlider.value);
+    const { data, height, width } = loadedImage;
+
+    setStatus('Loading neural network models…', 10);
+    const models = await loadCategoryModels(category);
+
+    setStatus('Running multi-scale inference…', 50);
+    const output = await runPipeline(data, height, width, models);
+
+    setStatus('Rendering result…', 95);
+    const outCanvas = document.createElement('canvas');
+    showGray(outCanvas, output, height, width);
+    setCanvas('outputBody', outCanvas);
+
+    setStatus(`Done! (${tf.memory().numTensors} tensors alive)`, 100);
+    setTimeout(hideStatus, 3000);
+  } catch (err) {
+    setStatus('Error: ' + err.message, 0);
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   Example outputs grid
+═══════════════════════════════════════════════════════════════ */
+
+function buildExamplesGrid() {
+  const grid = document.getElementById('examplesGrid');
+  for (let i = 0; i < 20; i++) {
+    const pair = document.createElement('div');
+    pair.className = 'example-pair';
+    pair.innerHTML = `
+      <div class="example-pair-header">Category ${i}</div>
+      <div class="example-pair-images">
+        <div>
+          <span>Blurred</span>
+          <img src="exampleoutputs/input${i}.png" alt="input ${i}" loading="lazy" />
+        </div>
+        <div>
+          <span>Deblurred</span>
+          <img src="exampleoutputs/output${i}.png" alt="output ${i}" loading="lazy" />
+        </div>
+      </div>`;
+    grid.appendChild(pair);
+  }
+}
+
+document.getElementById('toggleExamples').addEventListener('click', function () {
+  const grid = document.getElementById('examplesGrid');
+  const open = grid.classList.toggle('open');
+  this.textContent = open ? '▼ Hide examples' : '▶ Show examples';
+  if (open && !grid.children.length) buildExamplesGrid();
+});
+</script>
+</body>
+</html>
